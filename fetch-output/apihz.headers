@@ -1,0 +1,11 @@
+HTTP/2 200 
+server: nginx
+date: Thu, 23 Jul 2026 13:21:08 GMT
+content-type: application/json; charset=utf-8
+vary: Accept-Encoding
+access-control-allow-origin: *
+access-control-allow-methods: GET, POST
+access-control-allow-headers: *
+access-control-allow-credentials: true
+strict-transport-security: max-age=31536000
+

@@ -1,0 +1,26 @@
+HTTP/2 429 
+date: Thu, 23 Jul 2026 13:20:39 GMT
+content-type: application/json
+cf-ray: a1fafbd1ec2832fd-ORD
+cf-cache-status: DYNAMIC
+access-control-allow-origin: *
+nel: {"report_to":"cf-nel","success_fraction":0.0,"max_age":604800}
+retry-after: 86400
+server: cloudflare
+set-cookie: __cf_bm=wbssvrsoVd5AIWoFF4dqXcAkbRapeP6Qz7mlu2otyMc-1784812838.7171326-1.0.1.1-EhG8F8Rssya981GEqiyvign_y._efkxaSewFFf83viL0rk.INjae7qKjtCLNOTStBhPjFspHk0.1zPSpIqN734xVcwrLdbGT0c_V..8YRBGPADo11uFZPkTuGALRr.o7; HttpOnly; SameSite=None; Secure; Path=/; Domain=supabase.co; Expires=Thu, 23 Jul 2026 13:50:39 GMT
+strict-transport-security: max-age=31536000; includeSubDomains; preload
+vary: Accept-Encoding
+x-content-type-options: nosniff
+access-control-allow-headers: authorization, x-client-info, apikey, content-type
+endpoint-load-metrics: application_utilization:12,named_metrics.queue_depth:12
+sb-gateway-version: 1
+sb-project-ref: jhnnmmwgdrquwjytvvwu
+sb-request-id: 019f8f22-9f43-7f20-9785-df735db85e18
+x-deno-execution-id: 67874472-199c-4807-a7f5-3bbe28eb6fc7
+x-ratelimit-limit: 10
+x-ratelimit-remaining: 0
+x-sb-edge-region: us-east-2
+x-served-by: supabase-edge-runtime
+report-to: {"group":"cf-nel","max_age":604800,"endpoints":[{"url":"https://a.nel.cloudflare.com/report/v4?s=ENJ%2FzJxzcsEV6etTixyGedPU9KgQgsRqYXsFug6c3d%2FkMQHYy1irzpgNB0GSRrZiBQSLkK7jTbKGEEeTVK5Qu6kxhooLd366ipX%2BB3Rx1pLgSMIGzg7Yuq2hWtcvGDccVq24"}]}
+alt-svc: h3=":443"; ma=86400
+
