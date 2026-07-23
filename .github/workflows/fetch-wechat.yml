@@ -1,0 +1,57 @@
+name: Fetch WeChat article
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fetch-wechat.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Fetch article through several public readers
+        shell: bash
+        run: |
+          set +e
+          TARGET='https://mp.weixin.qq.com/s/NEiB_gI18gehnPEqrTp-rA'
+          ENCODED='https%3A%2F%2Fmp.weixin.qq.com%2Fs%2FNEiB_gI18gehnPEqrTp-rA'
+          UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+
+          echo '===== DIRECT WECHAT ====='
+          curl -L --max-time 60 -A "$UA" -H 'Accept-Language: zh-CN,zh;q=0.9' "$TARGET" -o direct.html -D direct.headers
+          cat direct.headers
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path('direct.html').read_text('utf-8','ignore') if Path('direct.html').exists() else ''
+          print(s[:300000])
+          PY
+
+          echo '===== WEBSITE2MARKDOWN JINA ====='
+          curl -L --max-time 120 -A "$UA" "https://md.genedai.me/https://mp.weixin.qq.com/s/NEiB_gI18gehnPEqrTp-rA?raw=true&engine=jina&format=json" -o w2m.json -D w2m.headers
+          cat w2m.headers
+          cat w2m.json
+
+          echo '===== READGZH ====='
+          curl -L --max-time 120 -A "$UA" "https://api.readgzh.site/rd?url=$ENCODED&format=text" -o readgzh.txt -D readgzh.headers
+          cat readgzh.headers
+          cat readgzh.txt
+
+          echo '===== APIHZ RETRIES ====='
+          for i in $(seq 1 18); do
+            echo "--- attempt $i ---"
+            curl -L --max-time 90 -A "$UA" "https://cn.apihz.cn/api/caiji/wx.php?id=88888888&key=88888888&url=$ENCODED" -o apihz.json -D apihz.headers
+            cat apihz.headers
+            cat apihz.json
+            if grep -Eq '"code"[[:space:]]*:[[:space:]]*200' apihz.json; then
+              echo 'APIHZ_SUCCESS'
+              break
+            fi
+            sleep 25
+          done
+
+          echo '===== FINAL FILE SIZES ====='
+          wc -c direct.html w2m.json readgzh.txt apihz.json 2>/dev/null
