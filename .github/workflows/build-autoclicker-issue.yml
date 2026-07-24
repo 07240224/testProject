@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -23,7 +23,9 @@ jobs:
       - name: Reassemble source archive
         shell: bash
         run: |
-          cat autoclicker-source.part* | base64 -d > autoclicker-source.zip
+          sed 's/ZBOI/ZbOI/' autoclicker-source.part01 > /tmp/autoclicker-source.part01
+          cat autoclicker-source.part00 /tmp/autoclicker-source.part01 autoclicker-source.part02 autoclicker-source.part03 autoclicker-source.part04 | base64 -d > autoclicker-source.zip
+          sha256sum autoclicker-source.zip
           unzip -t autoclicker-source.zip
           unzip -q autoclicker-source.zip -d project
 
@@ -51,14 +53,18 @@ jobs:
         working-directory: project/AutoClicker
         run: gradle --no-daemon :app:assembleDebug
 
-      - name: Store APK on temporary branch
+      - name: Prepare APK
         shell: bash
         run: |
           cp project/AutoClicker/app/build/outputs/apk/debug/app-debug.apk AutoClicker-v1.0.apk
-          sha256sum AutoClicker-v1.0.apk > AutoClicker-v1.0.sha256
-          base64 -w0 AutoClicker-v1.0.apk > AutoClicker-v1.0.apk.b64
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add AutoClicker-v1.0.apk.b64 AutoClicker-v1.0.sha256
-          git commit -m "Store built AutoClicker APK"
-          git push origin HEAD:build-autoclicker-apk-20260724
+          sha256sum AutoClicker-v1.0.apk | tee AutoClicker-v1.0.sha256
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: AutoClicker-APK
+          path: |
+            AutoClicker-v1.0.apk
+            AutoClicker-v1.0.sha256
+          if-no-files-found: error
+          retention-days: 1
