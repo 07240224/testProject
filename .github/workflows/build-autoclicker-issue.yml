@@ -1,15 +1,16 @@
 name: Build AutoClicker APK (temporary)
 
 on:
-  issues:
-    types: [opened]
+  push:
+    paths:
+      - '.github/workflows/build-autoclicker-issue.yml'
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
   build:
-    if: github.event.issue.title == 'BUILD_AUTOCLICKER_APK_20260724'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
