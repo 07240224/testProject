@@ -2,21 +2,21 @@ name: Build AutoClicker V3 Fixed Signing (temporary)
 
 on:
   pull_request:
-    types: [reopened, opened, synchronize]
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
 
 jobs:
   build:
-    if: github.event.pull_request.number == 6
+    if: github.event.pull_request.title == 'Build AutoClicker V3 Fixed Signed APK 20260725'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
       - name: Checkout source branch
         uses: actions/checkout@v4
         with:
-          ref: build-autoclicker-v3-20260725
+          ref: ${{ github.event.pull_request.head.ref }}
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
