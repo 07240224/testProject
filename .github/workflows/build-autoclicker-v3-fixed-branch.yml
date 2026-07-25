@@ -1,0 +1,109 @@
+name: Build AutoClicker V3 Fixed Signed Branch
+
+on:
+  push:
+    branches:
+      - build-autoclicker-v3-fixed-20260725
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android build tools
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Build unsigned release APK
+        working-directory: autoclicker-v3
+        run: gradle --no-daemon :app:assembleRelease
+
+      - name: Generate key, align, sign and verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
+          UNSIGNED="autoclicker-v3/app/build/outputs/apk/release/app-release-unsigned.apk"
+          ALIGNED="AutoClicker-v3.0-aligned.apk"
+          SIGNED="AutoClicker-v3.0-fixed.apk"
+          KEYSTORE="AutoClicker-stable-release.jks"
+          PASS_FILE="AutoClicker-signing-password.txt"
+          REPORT="AutoClicker-signing-report.txt"
+
+          STORE_PASS="$(openssl rand -base64 24 | tr -d '\n')"
+          KEY_PASS="$(openssl rand -base64 24 | tr -d '\n')"
+
+          keytool -genkeypair \
+            -keystore "$KEYSTORE" \
+            -alias autoclicker \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=AutoClicker Stable,O=Local Build,C=CN" \
+            -storepass "$STORE_PASS" \
+            -keypass "$KEY_PASS" \
+            -noprompt
+
+          "$BUILD_TOOLS/zipalign" -f -p 4 "$UNSIGNED" "$ALIGNED"
+          "$BUILD_TOOLS/apksigner" sign \
+            --ks "$KEYSTORE" \
+            --ks-key-alias autoclicker \
+            --ks-pass "pass:$STORE_PASS" \
+            --key-pass "pass:$KEY_PASS" \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --out "$SIGNED" \
+            "$ALIGNED"
+
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$SIGNED" | tee "$REPORT"
+          "$BUILD_TOOLS/zipalign" -c -p 4 "$SIGNED"
+          unzip -t "$SIGNED"
+          sha256sum "$SIGNED" | tee AutoClicker-v3.0-fixed.sha256
+
+          {
+            echo "alias=autoclicker"
+            echo "store_password=$STORE_PASS"
+            echo "key_password=$KEY_PASS"
+          } > "$PASS_FILE"
+
+          cat > SIGNING-README.txt <<'EOF'
+This archive contains the signing key for AutoClicker v3 fixed builds.
+Keep it private. Future updates must use this same keystore, alias and passwords.
+The APK was signed with Android apksigner using v1, v2 and v3 schemes.
+EOF
+
+          zip -9 AutoClicker-v3-fixed-signing-backup.zip "$KEYSTORE" "$PASS_FILE" SIGNING-README.txt "$REPORT"
+
+      - name: Upload outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: AutoClicker-V3-Fixed-Signed
+          path: |
+            AutoClicker-v3.0-fixed.apk
+            AutoClicker-v3.0-fixed.sha256
+            AutoClicker-signing-report.txt
+            AutoClicker-v3-fixed-signing-backup.zip
+          if-no-files-found: error
