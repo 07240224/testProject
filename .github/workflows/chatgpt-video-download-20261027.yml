@@ -1,9 +1,8 @@
-name: Verify online YouTube and Bilibili video download
+name: Verify online video downloads - API and client fallback
 on:
   push:
     branches:
       - chatgpt-video-download-20261027
-  workflow_dispatch:
 permissions:
   contents: read
 jobs:
@@ -11,56 +10,122 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Setup Deno
-        uses: denoland/setup-deno@v2
+      - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
-      - name: Install downloader
+      - name: Install tools
         run: |
-          python -m pip install --upgrade pip 'yt-dlp[default,curl-cffi]'
-          yt-dlp --version
-          ffprobe -version | head -n 1
-      - name: Download actual videos from public internet
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg >/dev/null
+          pip install -q 'yt-dlp[default,curl-cffi]' requests
+          ffprobe -version | head -1
+      - name: Download using multiple real internet sources
         shell: bash
         run: |
           mkdir -p downloaded
           python - <<'PY'
-          import subprocess, pathlib, json, hashlib, time
-          items = [
-            ("youtube_musedash_beginner","https://www.youtube.com/watch?v=Mddqe6Vdcko"),
-            ("bilibili_musedash_whatcha","https://www.bilibili.com/video/BV1Sp4y1W723/"),
-            ("youtube_test_known","https://www.youtube.com/watch?v=jNQXAC9IVRw"),
-            ("bilibili_musedash_collection","https://www.bilibili.com/video/BV1X14y1F7Bj/"),
-          ]
-          results=[]
-          for name,url in items:
-              cmd = ["yt-dlp", "--no-playlist", "--js-runtimes", "deno", "--remote-components","ejs:github", "--no-warnings", "--retries", "2", "--fragment-retries", "2", "--socket-timeout", "15", "--download-sections", "*0-inf", "-f", "bv*[height<=480]+ba/b[height<=480]/best", "--merge-output-format", "mp4", "-o", f"downloaded/{name}.%(ext)s", url]
-              print("\nTRY",name,url,flush=True)
+          import os, json, pathlib, subprocess, hashlib, requests, time, traceback
+          base=pathlib.Path('downloaded')
+          video_id='Mddqe6Vdcko'
+          you='https://www.youtube.com/watch?v='+video_id
+          bili='https://www.bilibili.com/video/BV1Sp4y1W723/'
+          UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36'
+          session=requests.Session();session.headers.update({'User-Agent':UA,'Accept':'*/*','Referer':'https://www.bilibili.com/'})
+          results=[];errors=[]
+          def probe(path):
+              p=subprocess.run(['ffprobe','-v','error','-show_entries','format=duration,size','-of','json',str(path)],capture_output=True,text=True,timeout=15)
+              if p.returncode: return None
+              try: j=json.loads(p.stdout);return j if float(j.get('format',{}).get('duration') or 0)>0 else None
+              except: return None
+          def register(label,url,path):
+              p=probe(path)
+              if p and path.stat().st_size>5000:
+                  h=hashlib.sha256()
+                  with open(path,'rb') as f:
+                      for c in iter(lambda:f.read(1048576),b''):h.update(c)
+                  item={'label':label,'source':url,'file':str(path),'size':path.stat().st_size,'sha256':h.hexdigest(),'probe':p}
+                  results.append(item)
+                  print('VERIFIED_DOWNLOADED_MP4',json.dumps(item,ensure_ascii=False),flush=True)
+                  return True
+              errors.append([label,'ffprobe invalid or too small',str(path),path.stat().st_size if path.exists() else None])
+              if path.exists():path.unlink()
+              return False
+          def download(label,remote):
+              p=base/(label+'.mp4')
               try:
-                  p=subprocess.run(cmd,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=120)
-                  print(p.stdout[-6500:],flush=True)
-                  files = [p for p in pathlib.Path("downloaded").glob(name+".*") if p.suffix in [".mp4",".webm",".mkv"] and p.stat().st_size > 1024]
-                  for f in files:
-                      chk=subprocess.run(["ffprobe","-v","error","-show_entries","format=duration,size","-of","json",str(f)],capture_output=True,text=True)
-                      probe=json.loads(chk.stdout) if chk.returncode==0 else {}
-                      hashval=hashlib.sha256(f.read_bytes()).hexdigest()
-                      results.append({"source":url,"file":str(f),"bytes":f.stat().st_size,"sha256":hashval,"ffprobe":probe})
-                      print("DOWNLOADED_AND_VERIFIED",json.dumps(results[-1]),flush=True)
-                  if not files: print("FAILED",name,p.returncode,flush=True)
+                  with session.get(remote,stream=True,timeout=(12,25),headers={'Accept':'*/*','Referer':'https://www.bilibili.com/'}) as r:
+                      print('STREAM',label,'HTTP',r.status_code,'TYPE',r.headers.get('Content-Type'),'URL',r.url[:180],flush=True)
+                      r.raise_for_status()
+                      n=0
+                      with open(p,'wb') as f:
+                          for chunk in r.iter_content(512*1024):
+                              if chunk:
+                                  f.write(chunk);n+=len(chunk)
+                              if n>180_000_000:break
+                  return register(label,remote,p)
               except Exception as e:
-                  print("ERROR",name,str(e),flush=True)
-          pathlib.Path("downloaded/report.json").write_text(json.dumps(results,indent=2),encoding="utf-8")
-          print("DONE",len(results),"files",flush=True)
+                  errors.append([label,str(e)[:200]]);print('DOWNLOAD_FAIL',label,str(e)[:200],flush=True)
+                  if p.exists():p.unlink()
+                  return False
+          def get_json(url,label):
+              try:
+                  r=session.get(url,timeout=16)
+                  print('API',label,r.status_code,r.headers.get('content-type'),r.text[:500],flush=True)
+                  return r.json() if r.status_code==200 else None
+              except Exception as e:errors.append([label,str(e)[:160]]);return None
+          def cobalt(host,site,label):
+              api='https://'+host+'/'
+              try:
+                  r=session.post(api,json={'url':site,'videoQuality':'480'},headers={'Accept':'application/json','Content-Type':'application/json'},timeout=25)
+                  print('COBALT',label,host,'HTTP',r.status_code,r.text[:800],flush=True)
+                  if r.status_code==200:
+                      j=r.json();target=j.get('url')
+                      if target and str(target).startswith('https://'):
+                          return download(label+'_via_cobalt',target)
+              except Exception as e: errors.append([label,str(e)[:160]]);print('COBALT_FAIL',host,str(e)[:160],flush=True)
+              return False
+          def yt_try(label,url,opts):
+              cmd=['yt-dlp','--no-playlist','--js-runtimes','deno','--remote-components','ejs:github','--no-warnings','--socket-timeout','12','--retries','1','--fragment-retries','1','-f','bv*[height<=480]+ba/b[height<=480]/best','--merge-output-format','mp4','-o',str(base/(label+'.%(ext)s'))]+opts+[url]
+              try:
+                  r=subprocess.run(cmd,capture_output=True,text=True,timeout=90)
+                  print('YTDLP',label,'EXIT',r.returncode,(r.stdout+r.stderr)[-1600:],flush=True)
+                  for p in base.glob(label+'.*'):
+                      if p.suffix.lower() in ('.mp4','.mkv','.webm') and register(label,url,p):return True
+              except Exception as e:errors.append([label,str(e)[:160]]);print('YTDLP_FAIL',label,str(e)[:160],flush=True)
+              return False
+          print('PUBLIC VIDEO DOWNLOAD CHECK',flush=True)
+          # Bilibili legacy playback API
+          for bvid in ['BV1Sp4y1W723','BV1X14y1F7Bj']:
+              view=get_json('https://api.bilibili.com/x/web-interface/view?bvid='+bvid,bvid+'_view')
+              if isinstance(view,dict) and view.get('code')==0:
+                  data=view['data'];cid=data.get('cid') or data.get('pages',[{}])[0].get('cid')
+                  if cid:
+                      play=get_json('https://api.bilibili.com/x/player/playurl?bvid='+bvid+'&cid='+str(cid)+'&qn=16&fnval=0',bvid+'_playurl')
+                      for ix,entry in enumerate(((play or {}).get('data') or {}).get('durl') or []):
+                          url=entry.get('url')
+                          if url and download('bilibili_api_'+bvid+'_'+str(ix),url):break
+          # External media extraction services
+          for host in ['rue-cobalt.xenon.zone','cobaltapi.cjs.nz','nuko-c.meowing.de','cobalt-omega.wolfy.love']:
+              if cobalt(host,bili,'bilibili') or cobalt(host,you,'youtube'):break
+          # Invidious video stream proxy
+          for host in ['inv.nadeko.net','invidious.nerdvpn.de','yt.chocolatemoo53.com','invidious.tiekoetter.com']:
+              js=get_json('https://'+host+'/api/v1/videos/'+video_id,'invidious_'+host)
+              if isinstance(js,dict):
+                  print('INVIDIOUS_INFO',host,js.get('title'),flush=True)
+              if download('youtube_invidious_'+host.replace('.','-'),'https://'+host+'/latest_version?id='+video_id+'&itag=18&local=true'):break
+          # Client variants on original YouTube
+          for name,opts in [('yt_embedded',['--extractor-args','youtube:player_client=web_embedded']),('yt_tv_safari',['--extractor-args','youtube:player_client=tv,web_safari']),('yt_android_vr',['--extractor-args','youtube:player_client=android_vr'])]:
+              if yt_try(name,you,opts):break
+          pathlib.Path('downloaded/report.json').write_text(json.dumps({'videos':results,'errors':errors},ensure_ascii=False,indent=2),encoding='utf-8')
+          print('FINAL VERIFIED FILES:',len(results),flush=True)
           PY
-      - name: Upload verified video files
+      - name: Upload all verified MP4s and logs
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: youtube-bilibili-downloaded-videos
+          name: downloaded-video-and-report-round2
           path: downloaded/
           retention-days: 2
-          if-no-files-found: warn
