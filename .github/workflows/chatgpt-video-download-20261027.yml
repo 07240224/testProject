@@ -1,4 +1,4 @@
-name: Bilibili Internet MP4 test - third party proxy
+name: Bilibili no-install internet media download
 on:
   push:
     branches: [chatgpt-video-download-20261027]
@@ -7,102 +7,69 @@ permissions:
 jobs:
   download:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 5
     steps:
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Install video validation dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg >/dev/null
-          python -m pip install -q requests
-      - name: Obtain Bilibili videos from third-party public proxy
+      - name: Fetch video using Python standard library without dependency installation
         shell: bash
         run: |
           mkdir -p downloaded
-          python - <<'PY'
-          import requests,pathlib,json,urllib.parse,subprocess,hashlib,re,time
-          out=pathlib.Path("downloaded");ss=requests.Session()
-          ss.headers.update({"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/129.0.0.0 Safari/537.36","Referer":"https://www.bilibili.com/"})
-          items=["BV1Sp4y1W723","BV1sW4y197cE","BV1X14y1F7Bj"]
-          report=[]
-          def info(label,url):
-              try:
-                  r=ss.get(url,timeout=(12,25))
-                  body=r.text[:12000] if ('json' in r.headers.get('Content-Type','') or 'text' in r.headers.get('Content-Type','')) else ''
-                  print("API_RESPONSE",label,r.status_code,r.headers.get('content-type'),r.url[:130],body[:1100].replace('\n',' '),flush=True)
-                  if r.status_code!=200: return None
-                  try:return r.json()
-                  except:return None
-              except Exception as e:print("API_ERROR",label,type(e).__name__,str(e)[:220],flush=True);return None
-          def check(url,label):
-              if not url.startswith('https://'):return False
-              domain=urllib.parse.urlparse(url).hostname or ''
-              if not (domain.endswith('.rapi.rest') or domain.endswith('.bilibili.com') or domain.endswith('.bilivideo.com') or domain.endswith('.bilivideo.cn') or domain == 'bili.rapi.rest'):return False
-              target=out/(label+".mp4")
-              try:
-                  with ss.get(url,stream=True,timeout=(12,20)) as r:
-                      print("STREAM",label,"HTTP",r.status_code,"TYPE",r.headers.get("content-type"),"LEN",r.headers.get("content-length"),flush=True)
-                      r.raise_for_status()
-                      size=0
-                      with open(target,'wb') as f:
-                          for chunk in r.iter_content(chunk_size=524288):
-                              if chunk:
-                                  f.write(chunk);size+=len(chunk)
-                              if size>120_000_000:break
-                  pr=subprocess.run(["ffprobe","-v","error","-show_entries","format=duration,size:stream=codec_type","-of","json",str(target)],capture_output=True,text=True,timeout=20)
-                  if pr.returncode:raise RuntimeError("ffprobe invalid file")
-                  parsed=json.loads(pr.stdout);duration=float(parsed.get('format',{}).get('duration') or 0)
-                  if duration<=1 or size<5000:raise RuntimeError("invalid duration")
-                  sha=hashlib.sha256(target.read_bytes()).hexdigest()
-                  res={"file":str(target),"size":size,"duration":duration,"sha256":sha,"url_host":domain,"streams":parsed.get('streams')}
-                  report.append(res)
-                  print("BILIBILI_VIDEO_SUCCESS",json.dumps(res),flush=True)
-                  return True
-              except Exception as e:
-                  print("DOWNLOAD_FAILED",label,type(e).__name__,str(e)[:240],flush=True)
-                  if target.exists():target.unlink()
-                  return False
-          def urls_from(x):
-              urls=[]
-              if isinstance(x,dict):
-                  for k,v in x.items():
-                      if isinstance(v,str) and v.startswith("http") and ('url' in k.lower() or 'proxy' in k.lower() or 'stream' in k.lower() or 'download' in k.lower()):
-                          urls.append(v)
-                      else:urls+=urls_from(v)
-              if isinstance(x,list):
-                  for y in x:urls+=urls_from(y)
-              return list(dict.fromkeys(urls))
-          for bvid in items:
-              address="https://www.bilibili.com/video/"+bvid
-              for minimal in ('1','true'):
-                  params=urllib.parse.urlencode({'url':address,'minimal':minimal,'proxy':'1'})
-                  data=info('RAPI_'+bvid+'_'+minimal,'https://bili.rapi.rest/api/hybrid/video_data?'+params)
-                  if data:
-                      print("RAPI_RESPONSE_KEYS",str(data)[:2800],flush=True)
-                      links=urls_from(data)
-                      print("RAPI_LINKS",bvid,[(urllib.parse.urlparse(u).hostname,u[:100]) for u in links[:20]],flush=True)
-                      for i,remote in enumerate(links):
-                          if ('mp4' in remote or 'kind=mp4' in remote or '/proxy?' in remote) and check(remote,'bili_rapi_'+bvid+'_'+str(i)):break
-                      if report:break
-              if report:break
-          for bvid in items[:2]:
-              if report:break
-              data=info('bilidlcom_'+bvid,'https://bilidl.com/api/analyze?url='+urllib.parse.quote('https://www.bilibili.com/video/'+bvid,safe=''))
-              if data:
-                  for i,u in enumerate(urls_from(data)):
-                      if check(u,'bilidl_'+bvid+'_'+str(i)):break
-          if not report:
-              for bvid in items[:2]:
-                  j=info('RAPI_direct_'+bvid,'https://bili.rapi.rest/api/bilibili/web/bv_to_aid?bvid='+bvid)
-          (out/'report.json').write_text(json.dumps({'videos':report},ensure_ascii=False,indent=2),encoding='utf-8')
-          print('BILIBILI_FINAL_VERIFIED',len(report),flush=True)
+          python3 - <<'PY'
+          import urllib.request,urllib.parse,json,pathlib,hashlib,time,traceback
+          dest=pathlib.Path('downloaded')
+          video_ids=['BV1Sp4y1W723','BV1sW4y197cE','BV1X14y1F7Bj']
+          def fetch(url,limit=1000000):
+              req=urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/129.0.0.0 Safari/537.36','Referer':'https://www.bilibili.com/','Accept':'application/json,video/mp4,*/*'})
+              with urllib.request.urlopen(req,timeout=14) as r:
+                  print('HTTP',r.status,'CT',r.headers.get('Content-Type'),'FINALHOST',urllib.parse.urlparse(r.url).netloc,flush=True)
+                  return r.read(limit)
+          def links(data):
+              out=[]
+              if isinstance(data,dict):
+                  for k,v in data.items():
+                      if isinstance(v,str) and v.startswith('https://') and any(a in k.lower() for a in ('url','proxy','download','mp4','video')):out.append(v)
+                      else:out.extend(links(v))
+              elif isinstance(data,list):
+                  for z in data:out.extend(links(z))
+              return list(dict.fromkeys(out))
+          success=[]
+          for bv in video_ids:
+              address='https://www.bilibili.com/video/'+bv
+              urls=[
+                'https://bili.rapi.rest/api/hybrid/video_data?'+urllib.parse.urlencode({'url':address,'minimal':'1','proxy':'1'}),
+                'https://bili.rapi.rest/api/hybrid/video_data?'+urllib.parse.urlencode({'url':address,'minimal':'true','proxy':'true'}),
+                'https://bilidl.com/api/analyze?'+urllib.parse.urlencode({'url':address})
+              ]
+              for url in urls:
+                  try:
+                      raw=fetch(url,150000)
+                      print('RESPONSE',url.split('/')[2],raw[:1000].decode('utf-8','replace').replace('\n',' '),flush=True)
+                      data=json.loads(raw)
+                      options=links(data)
+                      print('PROXY_MEDIA_LINKS',len(options),[urllib.parse.urlparse(z).netloc for z in options[:10]],flush=True)
+                      for i,media in enumerate(options):
+                          h=(urllib.parse.urlparse(media).hostname or '').lower()
+                          if not (h.endswith('rapi.rest') or h.endswith('bilivideo.com') or h.endswith('bilivideo.cn') or h.endswith('bilibili.com')):continue
+                          if ('mp4' not in media and 'proxy' not in media):continue
+                          try:
+                              data=fetch(media,50000000)
+                              if len(data)>8000 and (b'ftyp' in data[:32] or b'moov' in data[:32]):
+                                  f=dest/('internet_bilibili_'+bv+'_'+str(i)+'.mp4')
+                                  f.write_bytes(data)
+                                  d={'file':str(f),'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest(),'source':address}
+                                  success.append(d)
+                                  print('ACTUAL_BILIBILI_MP4_DOWNLOADED',d,flush=True)
+                                  break
+                          except Exception as e:print('DOWNLOAD_FAIL',type(e).__name__,str(e)[:220],flush=True)
+                      if success:break
+                  except Exception as e:print('API_FAILED',url.split('/')[2],bv,type(e).__name__,str(e)[:200],flush=True)
+              if success:break
+          (dest/'download-report.json').write_text(json.dumps(success,indent=2),encoding='utf-8')
+          print('DONE_FILE_COUNT',len(success),flush=True)
           PY
-      - name: Deliver downloaded media
+      - name: Store downloaded Bilibili file
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: bilibili-internet-video-test
+          name: bilibili-verified-internet-media-fast
           path: downloaded/
           retention-days: 2
