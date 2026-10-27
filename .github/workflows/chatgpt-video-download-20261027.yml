@@ -1,0 +1,66 @@
+name: Verify online YouTube and Bilibili video download
+on:
+  push:
+    branches:
+      - chatgpt-video-download-20261027
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Install downloader
+        run: |
+          python -m pip install --upgrade pip 'yt-dlp[default,curl-cffi]'
+          yt-dlp --version
+          ffprobe -version | head -n 1
+      - name: Download actual videos from public internet
+        shell: bash
+        run: |
+          mkdir -p downloaded
+          python - <<'PY'
+          import subprocess, pathlib, json, hashlib, time
+          items = [
+            ("youtube_musedash_beginner","https://www.youtube.com/watch?v=Mddqe6Vdcko"),
+            ("bilibili_musedash_whatcha","https://www.bilibili.com/video/BV1Sp4y1W723/"),
+            ("youtube_test_known","https://www.youtube.com/watch?v=jNQXAC9IVRw"),
+            ("bilibili_musedash_collection","https://www.bilibili.com/video/BV1X14y1F7Bj/"),
+          ]
+          results=[]
+          for name,url in items:
+              cmd = ["yt-dlp", "--no-playlist", "--js-runtimes", "deno", "--remote-components","ejs:github", "--no-warnings", "--retries", "2", "--fragment-retries", "2", "--socket-timeout", "15", "--download-sections", "*0-inf", "-f", "bv*[height<=480]+ba/b[height<=480]/best", "--merge-output-format", "mp4", "-o", f"downloaded/{name}.%(ext)s", url]
+              print("\nTRY",name,url,flush=True)
+              try:
+                  p=subprocess.run(cmd,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=120)
+                  print(p.stdout[-6500:],flush=True)
+                  files = [p for p in pathlib.Path("downloaded").glob(name+".*") if p.suffix in [".mp4",".webm",".mkv"] and p.stat().st_size > 1024]
+                  for f in files:
+                      chk=subprocess.run(["ffprobe","-v","error","-show_entries","format=duration,size","-of","json",str(f)],capture_output=True,text=True)
+                      probe=json.loads(chk.stdout) if chk.returncode==0 else {}
+                      hashval=hashlib.sha256(f.read_bytes()).hexdigest()
+                      results.append({"source":url,"file":str(f),"bytes":f.stat().st_size,"sha256":hashval,"ffprobe":probe})
+                      print("DOWNLOADED_AND_VERIFIED",json.dumps(results[-1]),flush=True)
+                  if not files: print("FAILED",name,p.returncode,flush=True)
+              except Exception as e:
+                  print("ERROR",name,str(e),flush=True)
+          pathlib.Path("downloaded/report.json").write_text(json.dumps(results,indent=2),encoding="utf-8")
+          print("DONE",len(results),"files",flush=True)
+          PY
+      - name: Upload verified video files
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: youtube-bilibili-downloaded-videos
+          path: downloaded/
+          retention-days: 2
+          if-no-files-found: warn
