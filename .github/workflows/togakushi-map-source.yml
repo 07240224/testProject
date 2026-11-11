@@ -1,0 +1,67 @@
+name: Togakushi public map source check
+on:
+  push:
+    branches: ['tmp/togakushi-map-source-20261111']
+permissions:
+  contents: read
+jobs:
+  retrieve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Fetch public map tiles and route sources
+        run: |
+          mkdir -p out/google out/gsi out/sources
+          python - <<'PY'
+          import requests, math, json, pathlib, concurrent.futures, hashlib, re
+          out=pathlib.Path('out'); results=[]
+          def get(url, path):
+              try:
+                  r=requests.get(url,timeout=(12,90),headers={'User-Agent':'Mozilla/5.0'})
+                  record={'url':url,'path':str(path),'status':r.status_code,'bytes':len(r.content),'content_type':r.headers.get('content-type')}
+                  if r.status_code==200:
+                      path.write_bytes(r.content);record['sha256']=hashlib.sha256(r.content).hexdigest()
+                  results.append(record)
+                  return r if r.status_code==200 else None
+              except Exception as e:
+                  results.append({'url':url,'error':str(e)}); return None
+          def tile(lat,lon,z):
+              return int((lon+180)/360*2**z),int((1-math.asinh(math.tan(math.radians(lat)))/math.pi)/2*2**z)
+          z=17; xmin,ymax=tile(36.729,138.058,z);xmax,ymin=tile(36.767,138.090,z)
+          jobs=[]
+          for x in range(xmin,xmax+1):
+              for y in range(ymin,ymax+1):
+                  jobs.append((f'https://mt1.google.com/vt?lyrs=m&x={x}&y={y}&z={z}&hl=ja',out/'google'/f'{z}_{x}_{y}.png'))
+          gxmin,gymax=tile(36.730,138.074,z);gxmax,gymin=tile(36.757,138.087,z)
+          for x in range(gxmin,gxmax+1):
+              for y in range(gymin,gymax+1):
+                  jobs.append((f'https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png',out/'gsi'/f'{z}_{x}_{y}.png'))
+          jobs += [
+            ('https://api.openstreetmap.org/api/0.6/map?bbox=138.058,36.729,138.090,36.767',out/'sources'/'area.osm'),
+            ('https://www.city.nagano.nagano.jp/documents/16050/002-2.pdf',out/'sources'/'nagano.pdf'),
+            ('https://togakushi.org/oldroad/kodo_okusyado/',out/'sources'/'route1.html'),
+            ('https://togakushi.org/jinjya/kanmichi_tyusya/',out/'sources'/'route2.html'),
+            ('https://togakushi.org/oldroad/kanmichi_hokosya/',out/'sources'/'route3.html'),
+            ('https://amaimonoko.at-ninja.jp/s-mtdata/sin/tgks-ecg.htm',out/'sources'/'echigo.html'),
+            ('https://gcy.jp/kkd/togakushi.html',out/'sources'/'gcy.html')]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+              list(pool.map(lambda j:get(*j),jobs))
+          # Also obtain a structured route and stop extract, independently of map tiles.
+          query='[out:json][timeout:70];(way[highway](36.729,138.058,36.767,138.090);node[highway=bus_stop](36.729,138.058,36.767,138.090);node[name](36.729,138.058,36.767,138.090););out geom;'
+          for server in ['https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter']:
+              try:
+                  r=requests.post(server,data={'data':query},timeout=95)
+                  results.append({'url':server,'query':query,'status':r.status_code,'bytes':len(r.content)})
+                  if r.status_code==200:
+                      (out/'sources'/'overpass.json').write_bytes(r.content);break
+              except Exception as e: results.append({'url':server,'error':str(e)})
+          (out/'manifest.json').write_text(json.dumps({'bbox':[138.058,36.729,138.090,36.767],'zoom':z,'tile_bounds':[xmin,ymin,xmax,ymax],'downloads':results},ensure_ascii=False,indent=2))
+          print('FILES',sum(1 for p in out.rglob('*') if p.is_file()))
+          print('FAILURES',json.dumps([r for r in results if r.get('status')!=200],ensure_ascii=False))
+          print('OSM', (out/'sources'/'area.osm').exists(), 'OVERPASS',(out/'sources'/'overpass.json').exists())
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: togakushi-public-map-sources
+          path: out
+          retention-days: 2
