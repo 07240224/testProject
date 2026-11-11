@@ -1,0 +1,80 @@
+name: Togakushi public map sources
+on:
+  push:
+    branches: ['map/togakushi-20261111-check']
+permissions:
+  contents: read
+jobs:
+  sources:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Collect map sources
+        run: |
+          mkdir -p out
+          python -m pip -q install requests pillow
+          python - <<'PY'
+          import requests, pathlib, json, math, concurrent.futures, time
+          from PIL import Image
+          D=pathlib.Path('out'); logs=[]
+          def grab(url,path,timeout=45):
+              try:
+                  r=requests.get(url,timeout=timeout,headers={'User-Agent':'Mozilla/5.0'})
+                  logs.append([url,r.status_code,len(r.content)])
+                  if r.status_code==200:
+                      pathlib.Path(path).write_bytes(r.content); return True
+              except Exception as e: logs.append([url,str(e)])
+              return False
+          sources={
+            'nagano.pdf':'https://www.city.nagano.nagano.jp/documents/16050/002-2.pdf',
+            'mapAll.pdf':'https://www.togakushi-jinja.jp/access/img/mapAll.pdf',
+            'okusyado.html':'https://togakushi.org/oldroad/kodo_okusyado/',
+            'kanmichi2.html':'https://togakushi.org/jinjya/kanmichi_tyusya/',
+            'kanmichi3.html':'https://togakushi.org/oldroad/kanmichi_hokosya/',
+            'echigo.html':'https://amaimonoko.at-ninja.jp/s-mtdata/sin/tgks-ecg.htm',
+            'leaflet.js':'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js',
+            'leaflet.css':'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'
+          }
+          with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
+              list(ex.map(lambda kv:grab(kv[1],D/kv[0]),sources.items()))
+          q='[out:json][timeout:50];(way[highway](36.727,138.055,36.772,138.104);node[highway=bus_stop](36.727,138.055,36.772,138.104);node[amenity](36.727,138.055,36.772,138.104);node[historic](36.727,138.055,36.772,138.104);node[tourism](36.727,138.055,36.772,138.104););out body;>;out skel qt;'
+          for host in ['https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter','https://overpass.private.coffee/api/interpreter']:
+              try:
+                  r=requests.post(host,data={'data':q},timeout=65); logs.append([host,r.status_code,len(r.content)])
+                  if r.status_code==200 and 'elements' in r.json():
+                      (D/'osm.json').write_bytes(r.content); break
+              except Exception as e: logs.append([host,str(e)])
+          if not (D/'osm.json').exists():
+              grab('https://api.openstreetmap.org/api/0.6/map?bbox=138.055,36.727,138.104,36.772',D/'osm.xml',90)
+          def tile(lat,lon,z):
+              return int((lon+180)/360*2**z),int((1-math.asinh(math.tan(math.radians(lat)))/math.pi)/2*2**z)
+          bounds={16:(36.729,138.056,36.769,138.094),17:(36.729,138.073,36.7575,138.0875)}
+          meta={}
+          for z,(s,w,n,e) in bounds.items():
+              x0,y0=tile(n,w,z);x1,y1=tile(s,e,z)
+              meta[str(z)]={'x0':x0,'x1':x1,'y0':y0,'y1':y1,'z':z}
+              for provider in ['google','gsi']:
+                  folder=D/f'{provider}{z}';folder.mkdir(exist_ok=True)
+                  tasks=[]
+                  for x in range(x0,x1+1):
+                      for y in range(y0,y1+1):
+                          url=f'https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&hl=ja' if provider=='google' else f'https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png'
+                          tasks.append((url,folder/f'{x}_{y}.png'))
+                  with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+                      list(ex.map(lambda t:grab(*t,timeout=20),tasks))
+                  im=Image.new('RGB',((x1-x0+1)*256,(y1-y0+1)*256),'#eeeeee');count=0
+                  for x in range(x0,x1+1):
+                      for y in range(y0,y1+1):
+                          try:
+                              p=Image.open(folder/f'{x}_{y}.png').convert('RGB');im.paste(p,((x-x0)*256,(y-y0)*256));count+=1
+                          except: pass
+                  im.save(D/f'{provider}{z}.png');meta[str(z)][provider+'_tiles']=count
+          (D/'tile_meta.json').write_text(json.dumps(meta))
+          (D/'fetch_log.json').write_text(json.dumps(logs,ensure_ascii=False))
+          print(json.dumps(meta));print('osm', (D/'osm.json').exists())
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: togakushi-public-map-sources
+          path: out/
+          retention-days: 3
