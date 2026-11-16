@@ -1,0 +1,99 @@
+name: Acquire Myers DBD Music
+on:
+  push:
+    branches:
+      - audio-myers-20261116
+  workflow_dispatch:
+jobs:
+  acquire:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Install audio dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          python -m pip install --quiet --user yt-dlp requests
+      - name: Retrieve audio sources and extract
+        shell: bash
+        run: |
+          cat > /tmp/get_audio.py <<'PY'
+          import requests, subprocess, os, glob, json, sys
+          os.makedirs('outputs', exist_ok=True)
+          vid = 'mjZHNITNQKA'
+          ua = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+          def run(*args):
+              print('RUN', args, flush=True)
+              return subprocess.run(list(args), check=True)
+          # Retrieve original on-wiki game audio, independently of any YouTube render.
+          try:
+              params={'action':'query','format':'json','prop':'imageinfo','iiprop':'url','titles':'File:TerrorRadius_Shape.ogg'}
+              r=requests.get('https://deadbydaylight.fandom.com/api.php',params=params,headers=ua,timeout=30)
+              print('WIKI API',r.status_code,r.text[:300],flush=True)
+              r.raise_for_status()
+              pages=r.json()['query']['pages']
+              url=next(x['imageinfo'][0]['url'] for x in pages.values() if 'imageinfo' in x)
+              rr=requests.get(url,headers={**ua,'Referer':'https://deadbydaylight.fandom.com/'},timeout=40)
+              print('WIKI RAW',rr.status_code,len(rr.content),rr.headers.get('Content-Type'),flush=True)
+              rr.raise_for_status()
+              if len(rr.content)>50000 and (rr.content.startswith(b'OggS') or 'audio' in rr.headers.get('Content-Type','')):
+                  open('outputs/TerrorRadius_Shape_original.ogg','wb').write(rr.content)
+                  print('WIKI ORIGINAL SAVED',flush=True)
+          except Exception as e: print('WIKI ERROR',repr(e),flush=True)
+          audio = None
+          try:
+              r=subprocess.run([sys.executable,'-m','yt_dlp','--no-playlist','--socket-timeout','20','--retries','1','-f','bestaudio','-o','outputs/youtube_source.%(ext)s','https://www.youtube.com/watch?v='+vid],capture_output=True,text=True,timeout=110)
+              print('YTDLP',r.returncode,r.stdout[-1000:],r.stderr[-1400:],flush=True)
+              candidates=[x for x in glob.glob('outputs/youtube_source.*') if not x.endswith('.part')]
+              if r.returncode==0 and candidates: audio=candidates[0]
+          except Exception as e: print('YTDLP ERROR',repr(e),flush=True)
+          if not audio:
+              for host in ['https://yt.chocolatemoo53.com','https://invidious.nerdvpn.de']:
+                  try:
+                      r=requests.get(host+'/api/v1/videos/'+vid,params={'local':'true'},headers=ua,timeout=22)
+                      print('API',host,r.status_code,r.text[:100],flush=True)
+                      r.raise_for_status()
+                      j=r.json()
+                      arr=j.get('adaptiveFormats',[])+j.get('formatStreams',[])
+                      arr=[f for f in arr if f.get('url') and ('audio/' in f.get('type',f.get('mimeType','')) or f.get('itag') in (139,140,249,250,251))]
+                      arr=sorted(arr,key=lambda f:(f.get('itag')==140, f.get('itag')==139),reverse=True)
+                      for f in arr[:4]:
+                          try:
+                              url=f['url']
+                              rr=requests.get(url,headers={**ua,'Referer':'https://www.youtube.com/'},timeout=(15,40))
+                              print('STREAM',rr.status_code,len(rr.content),rr.headers.get('Content-Type'),flush=True)
+                              rr.raise_for_status()
+                              if len(rr.content)<50000 or 'text/html' in rr.headers.get('Content-Type',''):continue
+                              suffix='.m4a' if ('mp4' in f.get('type',f.get('mimeType','')) or f.get('itag') in (139,140)) else '.webm'
+                              path='outputs/youtube_source'+suffix
+                              open(path,'wb').write(rr.content)
+                              audio=path;break
+                          except Exception as e: print('STREAM ERROR',repr(e),flush=True)
+                      if audio:break
+                  except Exception as e: print('API ERROR',repr(e),flush=True)
+          if not audio and os.path.exists('outputs/TerrorRadius_Shape_original.ogg'):
+              audio='outputs/TerrorRadius_Shape_original.ogg'
+              print('FALLBACK WIKI MASTER',flush=True)
+          if not audio:
+              raise RuntimeError('No original source audio retrieved')
+          print('SOURCE SELECTED',audio,flush=True)
+          pr=subprocess.run(['ffprobe','-v','error','-show_entries','format=duration','-of','default=nw=1:nk=1',audio],capture_output=True,text=True,check=True)
+          duration=float(pr.stdout.strip())
+          print('SOURCE DURATION',duration,flush=True)
+          if duration<70 or duration>180:
+              raise RuntimeError('Audio must be a verified four-layer montage, got '+str(duration))
+          run('ffmpeg','-hide_banner','-loglevel','error','-y','-i',audio,'-ss','0','-t','20.8','-vn','-codec:a','libmp3lame','-q:a','2','outputs/Michael_Myers_Layer_1_Distant.mp3')
+          run('ffmpeg','-hide_banner','-loglevel','error','-y','-i',audio,'-ss','63','-vn','-codec:a','libmp3lame','-q:a','2','outputs/Michael_Myers_Layer_4_Chase.mp3')
+          for f in glob.glob('outputs/*'):
+              if f.endswith(('.mp3','.ogg','.m4a','.webm')):
+                  p=subprocess.run(['ffprobe','-v','error','-show_entries','format=duration','-of','default=nw=1:nk=1',f],capture_output=True,text=True)
+                  print('FILE',f,os.path.getsize(f),'duration',p.stdout.strip(),flush=True)
+          PY
+          python /tmp/get_audio.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: myers-original-game-music-layers
+          path: outputs/
+          if-no-files-found: warn
+          retention-days: 7
