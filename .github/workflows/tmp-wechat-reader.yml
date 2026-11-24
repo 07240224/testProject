@@ -1,0 +1,80 @@
+name: Temporary article reader
+on:
+  push:
+    branches: [tmp-wechat-reader-20261124]
+    paths: ['.github/workflows/tmp-wechat-reader.yml']
+permissions:
+  contents: write
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record run ID
+        continue-on-error: true
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          printf '%s\n' "$GITHUB_RUN_ID" > .wechat-reader-run
+          git add .wechat-reader-run
+          git commit -m 'Record temporary retrieval run ID'
+          git push
+      - name: Fetch and validate public article
+        run: |
+          mkdir -p /tmp/wechat-result
+          python -m pip -q install requests beautifulsoup4
+          cat > /tmp/wechat-read.py <<'PY'
+          import requests, concurrent.futures, json, re, os, pathlib, traceback
+          from bs4 import BeautifulSoup
+          u="https://mp.weixin.qq.com/s/IbdG89SFyhePH4T88Nqs3w"
+          ua="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+          mobile="Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 MicroMessenger/8.0.54"
+          methods=[("direct-desktop",u,ua,None),("direct-mobile",u,mobile,None),("readgzh","https://api.readgzh.site/rd",ua,{"url":u,"format":"text"}),("jina","https://r.jina.ai/"+u,ua,None),("translate","https://mp-weixin-qq-com.translate.goog/s/IbdG89SFyhePH4T88Nqs3w",ua,{"_x_tr_sl":"zh-CN","_x_tr_tl":"en","_x_tr_hl":"en"})]
+          out=pathlib.Path("/tmp/wechat-result")
+          def get(spec):
+              name,url,agent,params=spec
+              try:
+                  r=requests.get(url,params=params,headers={"User-Agent":agent,"Accept":"text/html,application/xhtml+xml,application/json,*/*","Accept-Language":"zh-CN,zh;q=0.9,en;q=0.8","Referer":"https://mp.weixin.qq.com/"},timeout=(10,35))
+                  r.encoding=r.apparent_encoding or "utf-8"
+                  (out/(name+".raw")).write_bytes(r.content)
+                  s=BeautifulSoup(r.content,"html.parser")
+                  title=s.select_one("#activity-name") or s.select_one('meta[property="og:title"]') or s.title
+                  title=(title.get("content") or title.get_text(" ",strip=True)) if title else ""
+                  body=s.select_one("#js_content") or s.select_one("article") or s.select_one("main")
+                  text=body.get_text("\n",strip=True) if body else s.get_text("\n",strip=True)
+                  (out/(name+".txt")).write_text(text,encoding="utf-8")
+                  report={"method":name,"status":r.status_code,"url":r.url,"bytes":len(r.content),"title":title,"body_chars":len(text),"has_js_content":bool(s.select_one("#js_content")),"preview":text[:140]}
+                  return report
+              except Exception as e:
+                  return {"method":name,"error":str(e)}
+          with concurrent.futures.ThreadPoolExecutor(max_workers=5) as e:
+              reports=list(e.map(get,methods))
+          (out/"reports.json").write_text(json.dumps(reports,ensure_ascii=False,indent=2),encoding="utf-8")
+          for row in reports:
+              print(json.dumps({k:v for k,v in row.items() if k not in ("title","preview","url")},ensure_ascii=False))
+          PY
+          python /tmp/wechat-read.py
+      - name: Encrypt retrieval result
+        run: |
+          cat > /tmp/reader-pub.pem <<'KEY'
+          -----BEGIN PUBLIC KEY-----
+          MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxzjOoBPQjIeRr3AD3vHK
+          QUtmyHA9QoRNza/VOuYkbMG8EIC63hVgvwM9KPi4BXKM0kSO/mdNzLmJgZhj0ZZa
+          ztkAFqYrytkCZGdygh1ykG6Lxi1PxDDWXN0CGNy8MfPlfUKRB8nxiH50AvS+Hgws
+          27m4DqsfdE96QK3XN8gksrVbpHFT97Yg65tt6IqYv3s48h/MBgzb0JzkB2hp3pcg
+          rC9fi9/9uzSKFqd79kBagQDN60Xseh7xbWJri5gRg7mN8ZiHSk6DeNN7BTAOkDS+
+          NPqza/1GVQ+v4WJUtDVXnzsr+QrFj2Thm5jP4eA1+b/x2Ak9UBTb3TgsypqrwHoF
+          QwIDAQAB
+          -----END PUBLIC KEY-----
+          KEY
+          mkdir -p /tmp/reader-artifact
+          openssl rand -hex 32 > /tmp/reader-key
+          tar -czf /tmp/reader.tar.gz -C /tmp/wechat-result .
+          openssl enc -aes-256-cbc -salt -pbkdf2 -in /tmp/reader.tar.gz -out /tmp/reader-artifact/result.enc -pass file:/tmp/reader-key
+          openssl pkeyutl -encrypt -pubin -inkey /tmp/reader-pub.pem -in /tmp/reader-key -out /tmp/reader-artifact/key.enc -pkeyopt rsa_padding_mode:oaep
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wechat-reader-encrypted
+          path: /tmp/reader-artifact
+          retention-days: 1
